@@ -28,4 +28,4 @@ python -m pip install -r requirements.txt
 fastapi dev main.py
 ```
 
-The go to `http://127.0.0.1:8000`
+Then go to `http://127.0.0.1:8000`.
