@@ -3,16 +3,22 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlmodel import select
+from fastapi_limiter.depends import RateLimiter
 
 from app.db.session import SessionDep
-from app.dependencies import (ACCESS_TOKEN_EXPIRE_MINUTES,
-                              REFRESH_TOKEN_EXPIRE_DAYS, authenticate_user,
-                              encode_token, decode_token,
-                              get_current_active_user, hash_password,
-                              validate_password)
+from app.utilities.dependencies import (
+    authenticate_user,
+    get_current_active_user,
+    get_user, get_user_by_email
+)
+from app.utilities.encoders import hash_password, encode_token, decode_token, validate_password
 from app.models.user_models import User, UserCreate, UserPublic
 from app.schemas.auth_schemas import RefreshToken, Token
+from app.utilities.exceptions import InvalidCredentials
+from app.utilities.constants import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
+)
 
 router = APIRouter(
     prefix="/auth",
@@ -24,13 +30,13 @@ router = APIRouter(
 async def create_user(user: UserCreate, session: SessionDep):
     user_data = user.model_dump()
 
-    if session.exec(select(User).where(User.username == user_data["username"])).first():
+    if get_user(user_data["username"], session):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="User already exists."
         )
 
-    if session.exec(select(User).where(User.username == user_data["username"])).first():
+    if get_user_by_email(session, user_data["email"]):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already used."
@@ -47,14 +53,20 @@ async def create_user(user: UserCreate, session: SessionDep):
     return user_db
 
 
-@router.post("/login", response_model=Token, status_code=status.HTTP_200_OK)
+@router.post(
+    "/login", response_model=Token, status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RateLimiter(times=5, seconds=60))]
+    )
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     session: SessionDep
 ) -> Token:
     user = authenticate_user(form_data.username, form_data.password, session)
 
-    access_data = {"sub": user.username, "admin": user.is_superuser}
+    if not user:
+        raise InvalidCredentials()
+
+    access_data = {"sub": user.username, "role": user.role}
     refresh_data = {"sub": user.username}
 
     access_token = encode_token(
@@ -68,24 +80,25 @@ async def login_for_access_token(
 
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(refresh: RefreshToken):
+async def refresh_token(refresh: RefreshToken, session: SessionDep):
     payload = decode_token(refresh.refresh_token)
-    username = payload.get("sub")
-
-    if not username:
+    
+    user = get_user(payload.get("sub"), session)
+    
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token.",
         )
 
     access_token = encode_token(
-        {"sub": username}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        {"sub": user.username, "role": user.role}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     refresh_token = encode_token(
-        {"sub": username}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        {"sub": user.username}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     )
 
-    return Token(access_token=access_token, refresh_token=refresh_token ,token_type="bearer")
+    return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
 
 
 @router.get("/me", response_model=UserPublic, status_code=status.HTTP_200_OK)

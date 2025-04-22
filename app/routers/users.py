@@ -1,17 +1,13 @@
 from typing import Annotated
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import select
 
 from app.db.session import SessionDep
-from app.dependencies import check_user_admin, get_current_active_user, hash_password
-from app.models.user_models import User, UserPublic, UserUpdate
-
-ADMIN_EXCEPTION = HTTPException(
-    status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Require admin privilege.",
-    headers={"WWW-Authenticate": "Bearer"},
-)
+from app.utilities.dependencies import RoleChecker
+from app.models.user_models import User, UserPublic, UserUpdate, UserRole
+from app.utilities.exceptions import PermissionDenied, InvalidCredentials
+from app.utilities.encoders import verify_password, hash_password
 
 router = APIRouter(
     prefix="/users",
@@ -21,12 +17,9 @@ router = APIRouter(
 
 @router.get("/{user_id}", response_model=User, status_code=status.HTTP_200_OK)
 def get_user_by_id(
-        user_id: int, admin: Annotated[bool, Depends(check_user_admin)],
-        session: SessionDep
+    user_id: int, session: SessionDep,
+    _: Annotated[User, Depends(RoleChecker(allowed_roles=[UserRole.ADMIN]))]
 ):
-    if not admin:
-        raise ADMIN_EXCEPTION
-
     user = session.get(User, user_id)
 
     if not user:
@@ -38,15 +31,24 @@ def get_user_by_id(
     return user
 
 
+@router.get("/", response_model=list[UserPublic], status_code=status.HTTP_200_OK)
+def list_users(
+    session: SessionDep,
+    _: Annotated[User, Depends(RoleChecker(allowed_roles=[UserRole.ADMIN]))]
+):
+    users = session.exec(select(User)).all()
+    return users
+
+
 @router.patch("/{user_id}", response_model=UserPublic, status_code=status.HTTP_200_OK)
 def update_user(
         user_id: int, user_update: UserUpdate,
-        current_user: Annotated[UserPublic, Depends(get_current_active_user)],
+        current_user: Annotated[User, Depends(RoleChecker(allowed_roles=[UserRole.ADMIN]))],
         session: SessionDep
 ):
-    authorized = current_user.is_superuser or current_user.id == user_id
+    authorized = current_user.role == UserRole.ADMIN or current_user.id == user_id
     if not authorized:
-        raise ADMIN_EXCEPTION
+        raise PermissionDenied
 
     user = session.get(User, user_id)
 
@@ -58,10 +60,11 @@ def update_user(
 
     user_update_data = user_update.model_dump(exclude_unset=True)
 
-    if user_update_data.get("password"):
-        user_update_data["hashed_password"] = hash_password(user_update_data["password"])
+    if user_update_data.get("old_password") and user_update_data.get("new_password"):
+        if verify_password(user_update_data["old_password"], user.hashed_password):
+            raise InvalidCredentials()
+        user_update_data["hashed_password"] = hash_password(user_update_data["new_password"])
 
-    user_update_data["updated_at"] = datetime.now()
     user.sqlmodel_update(user_update_data)
 
     session.add(user)
@@ -71,15 +74,15 @@ def update_user(
     return user
 
 
-@router.delete("/{user_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{user_id}", status_code=status.HTTP_200_OK, response_model=UserPublic)
 def delete_user(
-        user_id: int, admin: Annotated[bool, Depends(check_user_admin)],
-        current_user: Annotated[UserPublic, Depends(get_current_active_user)],
+        user_id: int,
+        current_user: Annotated[User, Depends(RoleChecker(allowed_roles=[UserRole.ADMIN, UserRole.USER]))],
         session: SessionDep
 ):
-    authorized = current_user.is_superuser or current_user.id == user_id
+    authorized = current_user.role == UserRole.ADMIN or current_user.id == user_id
     if not authorized:
-        raise ADMIN_EXCEPTION
+        raise PermissionDenied()
 
     user = session.get(User, user_id)
     if not user:
@@ -89,10 +92,9 @@ def delete_user(
         )
 
     user.is_active = False
-    user.updated_at = datetime.now()
 
     session.add(user)
     session.commit()
     session.refresh(user)
 
-    return {"ok": True, "msg": "User deleted successfully."}
+    return user

@@ -8,6 +8,10 @@ from alembic import context
 
 from app.models.user_models import User
 
+# import os
+# from urllib.parse import quote_plus
+# from dotenv import load_dotenv
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
@@ -28,6 +32,17 @@ target_metadata = SQLModel.metadata
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
+# load_dotenv()
+
+# DB_USER = os.getenv("DB_USER")
+# DB_PASSWORD = os.getenv("DB_PASSWORD")
+# DB_HOST = os.getenv("DB_HOST", "localhost")
+# DB_PORT = os.getenv("DB_PORT", "5432")
+# DB_NAME = os.getenv("DB_NAME")
+
+# encoded_password = quote_plus(DB_PASSWORD)
+# DATABASE_URL = f"postgresql://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -41,6 +56,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
+    # url = DATABASE_URL
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -60,6 +76,19 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    # from sqlalchemy import engine_from_config
+    # from sqlalchemy import pool
+
+    # # Override sqlalchemy.url in alembic.ini
+    # config_section = config.get_section(config.config_ini_section)
+    # config_section["sqlalchemy.url"] = DATABASE_URL
+
+    # connectable = engine_from_config(
+    #     config_section,
+    #     prefix="sqlalchemy.",
+    #     poolclass=pool.NullPool,
+    # )
+    
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
